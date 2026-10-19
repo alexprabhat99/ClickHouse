@@ -1,0 +1,5 @@
+each_row	100000	4999950000	488890
+meta	100000	4999950000	488890
+array	2	3	3
+bad_each_row: PARALLEL
+bad_meta: NOT PARALLEL

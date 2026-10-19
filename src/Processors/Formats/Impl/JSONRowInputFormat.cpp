@@ -4,6 +4,7 @@
 #include <Formats/EscapingRuleUtils.h>
 #include <IO/PeekableReadBuffer.h>
 #include <IO/ReadHelpers.h>
+#include <base/find_symbols.h>
 
 namespace DB
 {
@@ -32,6 +33,7 @@ void JSONRowInputFormat::readPrefix()
         && JSONUtils::skipUntilFieldInObject(*peekable_buf, "data", format_settings.json)
         && JSONUtils::checkAndSkipArrayStart(*peekable_buf))
     {
+        has_metadata = true;
         data_in_square_brackets = true;
         if (validate_types_from_metadata)
         {
@@ -40,7 +42,7 @@ void JSONRowInputFormat::readPrefix()
     }
     else
     {
-        parse_as_json_each_row = true;
+        has_metadata = false;
         peekable_buf->rollbackToCheckpoint();
         JSONEachRowRowInputFormat::readPrefix();
     }
@@ -48,14 +50,14 @@ void JSONRowInputFormat::readPrefix()
 
 void JSONRowInputFormat::readSuffix()
 {
-    if (parse_as_json_each_row)
-    {
-        JSONEachRowRowInputFormat::readSuffix();
-    }
-    else
+    if (has_metadata)
     {
         JSONUtils::skipArrayEnd(*peekable_buf);
         JSONUtils::skipTheRestOfObject(*peekable_buf, format_settings.json);
+    }
+    else
+    {
+        JSONEachRowRowInputFormat::readSuffix();
     }
 }
 
@@ -101,6 +103,38 @@ NamesAndTypesList JSONRowSchemaReader::readSchema()
     return JSONUtils::readMetadata(*peekable_buf, format_settings.json);
 }
 
+namespace
+{
+
+/// The object with metadata cannot be split into rows. It starts with the field `meta`, so peek at
+/// the name of the first field, and parse sequentially if it is `meta` or cannot be checked.
+bool nonTrivialPrefixAndSuffixCheckerJSON(ReadBuffer & buf)
+{
+    skipBOMIfExists(buf);
+    if (JSONUtils::nonTrivialPrefixAndSuffixCheckerJSONEachRowImpl(buf))
+        return true;
+
+    const char * pos = buf.position();
+    const char * end = buf.buffer().end();
+    if (*pos != '{')
+        return true;
+
+    ++pos;
+    while (pos < end && isWhitespaceASCII(*pos))
+        ++pos;
+    if (pos == end || *pos != '"')
+        return true;
+
+    ++pos;
+    const char * name_end = find_first_symbols<'"', '\\'>(pos, end);
+    if (name_end == end || *name_end == '\\')
+        return true;
+
+    return std::string_view(pos, name_end) == "meta";
+}
+
+}
+
 void registerInputFormatJSON(FormatFactory & factory);
 void registerInputFormatJSON(FormatFactory & factory)
 {
@@ -114,6 +148,7 @@ void registerInputFormatJSON(FormatFactory & factory)
     });
 
     factory.markFormatSupportsSubsetOfColumns("JSON");
+    factory.registerNonTrivialPrefixAndSuffixChecker("JSON", nonTrivialPrefixAndSuffixCheckerJSON);
 
     factory.setDocumentation("JSON", Documentation{
         .description = R"DOCS_MD(

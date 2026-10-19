@@ -35,7 +35,9 @@ private:
     void readSuffix() override;
 
     const bool validate_types_from_metadata;
-    bool parse_as_json_each_row = false;
+    /// `readPrefix` is not called for the chunks after the first one in parallel parsing,
+    /// so the data is parsed as `JSONEachRow` unless the metadata was read.
+    bool has_metadata = false;
     std::unique_ptr<PeekableReadBuffer> peekable_buf;
     std::exception_ptr reading_metadata_exception;
 };

@@ -695,6 +695,7 @@ void registerFileSegmentationEngineJSONEachRow(FormatFactory & factory)
     factory.registerFileSegmentationEngineCreator("JSONLines", creator);
     factory.registerFileSegmentationEngineCreator("NDJSON", creator);
     factory.registerFileSegmentationEngineCreator("JSONL", creator);
+    factory.registerFileSegmentationEngineCreator("JSON", creator);
 }
 
 void registerNonTrivialPrefixAndSuffixCheckerJSONEachRow(FormatFactory & factory);
