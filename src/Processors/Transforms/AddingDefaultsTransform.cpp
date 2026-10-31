@@ -205,8 +205,18 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
             columns_needing_defaults.emplace_back(col_name, column_idx);
     }
 
-    /// The columns which are read only for the defaults of the needed columns: their own defaults are computed only if a computed
-    /// default depends on them, not through a column without missing values. Otherwise they could fail on the values which are not used.
+    /// A subcolumn, e.g. `a.x` of a tuple, depends on its column.
+    auto get_name_in_storage = [&](const String & name) -> String
+    {
+        if (!columns.has(name))
+            for (auto [column_name, subcolumn_name] : Nested::getAllColumnAndSubcolumnPairs(name))
+                if (columns.has(String(column_name)) && columns.get(String(column_name)).type->hasSubcolumn(subcolumn_name))
+                    return String(column_name);
+        return name;
+    };
+
+    /// The columns which are read only for the defaults of the needed columns: their own defaults are computed only if a computed default
+    /// depends on them, and not via a column which is in the block without missing values. Otherwise they could fail on unused values.
     if (needed_columns && !columns_needing_defaults.empty())
     {
         NameSet missing_columns;
@@ -242,15 +252,7 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
             RequiredSourceColumnsVisitor(columns_context).visit(expression);
 
             for (const auto & required_name : columns_context.requiredColumns())
-            {
-                /// A subcolumn, e.g. `a.x` of a tuple, depends on its column.
-                String name_in_storage = required_name;
-                if (!columns.has(required_name))
-                    for (auto [column_name, subcolumn_name] : Nested::getAllColumnAndSubcolumnPairs(required_name))
-                        if (columns.has(String(column_name)) && columns.get(String(column_name)).type->hasSubcolumn(subcolumn_name))
-                            name_in_storage = column_name;
-                names_to_visit.push_back(std::move(name_in_storage));
-            }
+                names_to_visit.push_back(get_name_in_storage(required_name));
         }
 
         std::erase_if(columns_needing_defaults, [&](const auto & column) { return !columns_to_compute.contains(column.first); });
@@ -284,8 +286,8 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
         NameSet deps;
         for (const auto & req : required)
         {
-            if (columns_needing_defaults_set.contains(req))
-                deps.insert(req);
+            if (auto dependency = get_name_in_storage(req); columns_needing_defaults_set.contains(dependency))
+                deps.insert(std::move(dependency));
         }
         dependencies[col_name] = std::move(deps);
     }

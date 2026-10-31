@@ -6,8 +6,8 @@ CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 DATA_FILE="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}"
 
-# Reading only "b": the default of the tuple "a", on which the default of "b" depends, is computed: 8.
-echo '{"z":[4],"a":[null],"b":[null]}' > "${DATA_FILE}_tuple.json"
+# Reading only "b": the default of the tuple "a", on which the default of "b" depends, is computed before it: 8, 9.
+echo '{"z":[4,5],"a":[null,{"x":9}],"b":[null,null]}' > "${DATA_FILE}_tuple.json"
 $CLICKHOUSE_LOCAL -q "SELECT b FROM file('${DATA_FILE}_tuple.json', JSONColumns, 'z UInt32, a Tuple(x UInt32) DEFAULT tuple(z * 2), b UInt32 DEFAULT a.x')"
 
 # The default of "d" is not computed, because "c" is read: 14.
@@ -18,7 +18,7 @@ $CLICKHOUSE_LOCAL -q "SELECT b FROM file('${DATA_FILE}_present.json', JSONColumn
 columns="a0 UInt64 DEFAULT 1"
 for i in $(seq 1 18); do columns="$columns, a$i UInt64 DEFAULT a$((i - 1)) + a$((i - 1))"; done
 $CLICKHOUSE_CLIENT --max_expanded_ast_elements 10000000 -q "CREATE TABLE t_chain ($columns) ENGINE = Memory"
-printf '{"a18":42}\n{}\n' > "${DATA_FILE}_chain.jsonl" "${DATA_FILE}_lambda.jsonl"
+printf '{"a18":42}\n{}\n' > "${DATA_FILE}_chain.jsonl"
 $CLICKHOUSE_CLIENT --max_expanded_ast_elements 10000000 --max_memory_usage_in_client 500M -q "INSERT INTO t_chain (a18) FROM INFILE '${DATA_FILE}_chain.jsonl' FORMAT JSONEachRow"
 $CLICKHOUSE_CLIENT -q "SELECT a18 FROM t_chain ORDER BY a18"
 $CLICKHOUSE_CLIENT -q "DROP TABLE t_chain"

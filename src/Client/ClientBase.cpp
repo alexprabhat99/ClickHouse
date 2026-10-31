@@ -2588,7 +2588,7 @@ private:
     size_t counter = 0;
 };
 
-/// Replaces the not inserted columns in a default expression with their defaults, as the server does, once each, then with its alias.
+/// Replaces the not inserted columns in a default expression with their defaults, as the server does: each once, then its alias.
 /// Lambda arguments get unique names (`lambda_arguments` maps those of enclosing lambdas), so they neither shadow nor are taken for columns.
 void substituteNotInsertedColumns(
     ASTPtr & ast,
