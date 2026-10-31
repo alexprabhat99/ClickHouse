@@ -271,6 +271,7 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
     /// n's defaults (for rows where n is missing), mix them into the block, and only
     /// then compute s's defaults so that s can see the correct values of n.
     std::unordered_map<String, NameSet> dependencies;
+    std::unordered_map<String, NameSet> raw_dependencies;
     std::unordered_set<String> columns_needing_defaults_set;
     for (const auto & [col_name, col_idx] : columns_needing_defaults)
         columns_needing_defaults_set.insert(col_name);
@@ -286,6 +287,8 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
         NameSet deps;
         for (const auto & req : required)
         {
+            if (columns_needing_defaults_set.contains(req))
+                raw_dependencies[col_name].insert(req);
             if (auto dependency = get_name_in_storage(req); columns_needing_defaults_set.contains(dependency))
                 deps.insert(std::move(dependency));
         }
@@ -299,25 +302,19 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
 
     while (processed.size() < columns_needing_defaults.size())
     {
-        /// Find columns ready to process (all dependencies satisfied)
-        std::vector<std::pair<String, size_t>> ready;
-        for (const auto & [col_name, col_idx] : columns_needing_defaults)
+        /// Find columns ready to process; a cycle through a subcolumn (`a DEFAULT tuple(b)`, `b DEFAULT a.x`) by `raw_dependencies`.
+        auto find_ready = [&](std::unordered_map<String, NameSet> & dependencies_to_check)
         {
-            if (processed.contains(col_name))
-                continue;
-
-            bool all_deps_ready = true;
-            for (const auto & dep : dependencies[col_name])
-            {
-                if (!processed.contains(dep))
-                {
-                    all_deps_ready = false;
-                    break;
-                }
-            }
-            if (all_deps_ready)
-                ready.emplace_back(col_name, col_idx);
-        }
+            std::vector<std::pair<String, size_t>> result;
+            for (const auto & [col_name, col_idx] : columns_needing_defaults)
+                if (!processed.contains(col_name)
+                    && std::ranges::all_of(dependencies_to_check[col_name], [&](const String & dep) { return processed.contains(dep); }))
+                    result.emplace_back(col_name, col_idx);
+            return result;
+        };
+        auto ready = find_ready(dependencies);
+        if (ready.empty())
+            ready = find_ready(raw_dependencies);
 
         if (ready.empty())
         {

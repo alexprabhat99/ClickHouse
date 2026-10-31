@@ -10,6 +10,10 @@ DATA_FILE="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}"
 echo '{"z":[4,5],"a":[null,{"x":9}],"b":[null,null]}' > "${DATA_FILE}_tuple.json"
 $CLICKHOUSE_LOCAL -q "SELECT b FROM file('${DATA_FILE}_tuple.json', JSONColumns, 'z UInt32, a Tuple(x UInt32) DEFAULT tuple(z * 2), b UInt32 DEFAULT a.x')"
 
+# A cycle through a subcolumn is ordered by the names as they are: "b" from "a" as read, then "a" from "b".
+printf '{"a":{"x":4}}\n{"b":3}\n' > "${DATA_FILE}_cycle.jsonl"
+$CLICKHOUSE_LOCAL -q "SELECT * FROM file('${DATA_FILE}_cycle.jsonl', JSONEachRow, 'a Tuple(x UInt32) DEFAULT tuple(b), b UInt32 DEFAULT a.x')"
+
 # The default of "d" is not computed, because "c" is read: 14.
 echo '{"a":["oops"],"c":[7],"b":[null]}' > "${DATA_FILE}_present.json"
 $CLICKHOUSE_LOCAL -q "SELECT b FROM file('${DATA_FILE}_present.json', JSONColumns, 'a String, d UInt32 DEFAULT toUInt32(a), c UInt32 DEFAULT d, b UInt32 DEFAULT c * 2')"
@@ -30,4 +34,4 @@ $CLICKHOUSE_CLIENT --input_format_null_as_default 1 -q "INSERT INTO t_lambda (b)
 $CLICKHOUSE_CLIENT -q "SELECT a, b FROM t_lambda"
 $CLICKHOUSE_CLIENT -q "DROP TABLE t_lambda"
 
-rm -f "${DATA_FILE}_tuple.json" "${DATA_FILE}_present.json" "${DATA_FILE}_chain.jsonl" "${DATA_FILE}_lambda.jsonl"
+rm -f "${DATA_FILE}_tuple.json" "${DATA_FILE}_cycle.jsonl" "${DATA_FILE}_present.json" "${DATA_FILE}_chain.jsonl" "${DATA_FILE}_lambda.jsonl"
