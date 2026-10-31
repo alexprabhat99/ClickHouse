@@ -2662,8 +2662,10 @@ void substituteNotInsertedColumns(
             }
         }
 
+        /// An alias defined in a lambda is not visible outside of it.
+        auto body_substituted_aliases = substituted_aliases;
         substituteNotInsertedColumns(
-            function->arguments->children[1], inserted_columns, columns, lambda_argument_names, substituted_aliases, body_lambda_arguments);
+            function->arguments->children[1], inserted_columns, columns, lambda_argument_names, body_substituted_aliases, body_lambda_arguments);
         return;
     }
 

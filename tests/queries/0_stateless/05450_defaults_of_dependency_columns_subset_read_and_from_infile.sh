@@ -18,9 +18,16 @@ $CLICKHOUSE_LOCAL -q "SELECT b FROM file('${DATA_FILE}_present.json', JSONColumn
 columns="a0 UInt64 DEFAULT 1"
 for i in $(seq 1 18); do columns="$columns, a$i UInt64 DEFAULT a$((i - 1)) + a$((i - 1))"; done
 $CLICKHOUSE_CLIENT --max_expanded_ast_elements 10000000 -q "CREATE TABLE t_chain ($columns) ENGINE = Memory"
-printf '{"a18":42}\n{}\n' > "${DATA_FILE}_chain.jsonl"
+printf '{"a18":42}\n{}\n' > "${DATA_FILE}_chain.jsonl" "${DATA_FILE}_lambda.jsonl"
 $CLICKHOUSE_CLIENT --max_expanded_ast_elements 10000000 --max_memory_usage_in_client 500M -q "INSERT INTO t_chain (a18) FROM INFILE '${DATA_FILE}_chain.jsonl' FORMAT JSONEachRow"
 $CLICKHOUSE_CLIENT -q "SELECT a18 FROM t_chain ORDER BY a18"
 $CLICKHOUSE_CLIENT -q "DROP TABLE t_chain"
 
-rm -f "${DATA_FILE}_tuple.json" "${DATA_FILE}_present.json" "${DATA_FILE}_chain.jsonl"
+# "a" is used first in a lambda, whose aliases are not visible outside of it: 5, 18.
+$CLICKHOUSE_CLIENT -q "CREATE TABLE t_lambda (a UInt32 DEFAULT 5, b UInt32 DEFAULT arraySum(arrayMap(z -> a + z, [1, 2])) + a) ENGINE = Memory"
+echo '{"b":null}' > "${DATA_FILE}_lambda.jsonl"
+$CLICKHOUSE_CLIENT --input_format_null_as_default 1 -q "INSERT INTO t_lambda (b) FROM INFILE '${DATA_FILE}_lambda.jsonl' FORMAT JSONEachRow"
+$CLICKHOUSE_CLIENT -q "SELECT a, b FROM t_lambda"
+$CLICKHOUSE_CLIENT -q "DROP TABLE t_lambda"
+
+rm -f "${DATA_FILE}_tuple.json" "${DATA_FILE}_present.json" "${DATA_FILE}_chain.jsonl" "${DATA_FILE}_lambda.jsonl"
