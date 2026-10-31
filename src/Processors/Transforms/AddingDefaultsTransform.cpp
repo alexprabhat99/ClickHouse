@@ -19,6 +19,7 @@
 #include <Core/BlockMissingValues.h>
 
 #include <DataTypes/DataTypesNumber.h>
+#include <DataTypes/NestedUtils.h>
 #include <DataTypes/DataTypesDecimal.h>
 #include <DataTypes/DataTypeDate.h>
 #include <DataTypes/DataTypeDate32.h>
@@ -204,8 +205,18 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
             columns_needing_defaults.emplace_back(col_name, column_idx);
     }
 
-    /// The columns which are read only for the defaults of the needed columns: their own defaults are computed only
-    /// if a default which is computed depends on them. Otherwise they could fail on the values which are not used.
+    /// A subcolumn, e.g. `a.x` of a tuple, depends on its column.
+    auto get_name_in_storage = [&](const String & name) -> String
+    {
+        if (!columns.has(name))
+            for (auto [column_name, subcolumn_name] : Nested::getAllColumnAndSubcolumnPairs(name))
+                if (columns.has(String(column_name)) && columns.get(String(column_name)).type->hasSubcolumn(subcolumn_name))
+                    return String(column_name);
+        return name;
+    };
+
+    /// The columns which are read only for the defaults of the needed columns: their own defaults are computed only if a computed default
+    /// depends on them, and not via a column which is in the block without missing values. Otherwise they could fail on unused values.
     if (needed_columns && !columns_needing_defaults.empty())
     {
         NameSet missing_columns;
@@ -229,6 +240,8 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
 
             if (missing_columns.contains(name))
                 columns_to_compute.insert(name);
+            else if (res.has(name))
+                continue;
 
             auto it = column_defaults.find(name);
             if (it == column_defaults.end())
@@ -239,14 +252,7 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
             RequiredSourceColumnsVisitor(columns_context).visit(expression);
 
             for (const auto & required_name : columns_context.requiredColumns())
-            {
-                /// A subcolumn, e.g. `a.x` of a tuple, depends on its column.
-                String name_in_storage = required_name;
-                if (!columns.has(required_name))
-                    if (auto subcolumn = columns.tryGetColumnOrSubcolumn(GetColumnsOptions::All, required_name))
-                        name_in_storage = subcolumn->getNameInStorage();
-                names_to_visit.push_back(std::move(name_in_storage));
-            }
+                names_to_visit.push_back(get_name_in_storage(required_name));
         }
 
         std::erase_if(columns_needing_defaults, [&](const auto & column) { return !columns_to_compute.contains(column.first); });
@@ -265,6 +271,7 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
     /// n's defaults (for rows where n is missing), mix them into the block, and only
     /// then compute s's defaults so that s can see the correct values of n.
     std::unordered_map<String, NameSet> dependencies;
+    std::unordered_map<String, NameSet> raw_dependencies;
     std::unordered_set<String> columns_needing_defaults_set;
     for (const auto & [col_name, col_idx] : columns_needing_defaults)
         columns_needing_defaults_set.insert(col_name);
@@ -281,7 +288,9 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
         for (const auto & req : required)
         {
             if (columns_needing_defaults_set.contains(req))
-                deps.insert(req);
+                raw_dependencies[col_name].insert(req);
+            if (auto dependency = get_name_in_storage(req); columns_needing_defaults_set.contains(dependency))
+                deps.insert(std::move(dependency));
         }
         dependencies[col_name] = std::move(deps);
     }
@@ -293,25 +302,19 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
 
     while (processed.size() < columns_needing_defaults.size())
     {
-        /// Find columns ready to process (all dependencies satisfied)
-        std::vector<std::pair<String, size_t>> ready;
-        for (const auto & [col_name, col_idx] : columns_needing_defaults)
+        /// Find columns ready to process; a cycle through a subcolumn (`a DEFAULT tuple(b)`, `b DEFAULT a.x`) by `raw_dependencies`.
+        auto find_ready = [&](std::unordered_map<String, NameSet> & dependencies_to_check)
         {
-            if (processed.contains(col_name))
-                continue;
-
-            bool all_deps_ready = true;
-            for (const auto & dep : dependencies[col_name])
-            {
-                if (!processed.contains(dep))
-                {
-                    all_deps_ready = false;
-                    break;
-                }
-            }
-            if (all_deps_ready)
-                ready.emplace_back(col_name, col_idx);
-        }
+            std::vector<std::pair<String, size_t>> result;
+            for (const auto & [col_name, col_idx] : columns_needing_defaults)
+                if (!processed.contains(col_name)
+                    && std::ranges::all_of(dependencies_to_check[col_name], [&](const String & dep) { return processed.contains(dep); }))
+                    result.emplace_back(col_name, col_idx);
+            return result;
+        };
+        auto ready = find_ready(dependencies);
+        if (ready.empty())
+            ready = find_ready(raw_dependencies);
 
         if (ready.empty())
         {
