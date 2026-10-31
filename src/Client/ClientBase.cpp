@@ -2559,7 +2559,7 @@ void collectIdentifiersAndAliases(const ASTPtr & ast, NameSet & names)
         collectIdentifiersAndAliases(child, names);
 }
 
-/// Generates the new names of lambda arguments, which are different from the columns
+/// Generates the new names of lambda arguments and the aliases of substituted columns, which are different from the columns
 /// and from the identifiers and aliases in their default expressions, because any of them can be substituted.
 class LambdaArgumentNameGenerator
 {
@@ -2588,14 +2588,14 @@ private:
     size_t counter = 0;
 };
 
-/// Replaces the not inserted columns in a default expression with their defaults, as the server does.
-/// The arguments of lambdas are renamed to unique names (`lambda_arguments` maps the names bound by the enclosing lambdas),
-/// so that they don't shadow the columns of a substituted default and are not taken for columns themselves.
+/// Replaces the not inserted columns in a default expression with their defaults, as the server does, once each, then with its alias.
+/// Lambda arguments get unique names (`lambda_arguments` maps those of enclosing lambdas), so they neither shadow nor are taken for columns.
 void substituteNotInsertedColumns(
     ASTPtr & ast,
     const NameSet & inserted_columns,
     const ColumnsDescription & columns,
     LambdaArgumentNameGenerator & lambda_argument_names,
+    std::unordered_map<String, String> & substituted_aliases,
     const std::unordered_map<String, String> & lambda_arguments = {})
 {
     if (const auto * identifier = ast->as<ASTIdentifier>())
@@ -2615,19 +2615,31 @@ void substituteNotInsertedColumns(
         if (inserted_columns.contains(name) || !columns.has(name))
             return;
 
+        if (auto it = substituted_aliases.find(name); it != substituted_aliases.end())
+        {
+            auto reference = make_intrusive<ASTIdentifier>(it->second);
+            if (identifier->tryGetAlias() != it->second)
+                reference->setAlias(identifier->tryGetAlias());
+            ast = std::move(reference);
+            return;
+        }
+
+        /// Keep the alias, the expression can refer to it.
+        String alias = identifier->tryGetAlias().empty() ? lambda_argument_names.generate() : identifier->tryGetAlias();
+        substituted_aliases.emplace(name, alias);
+
         const auto & column = columns.get(name);
         ASTPtr default_value;
         if (column.default_desc.expression)
         {
             default_value = column.default_desc.expression->clone();
-            substituteNotInsertedColumns(default_value, inserted_columns, columns, lambda_argument_names);
+            substituteNotInsertedColumns(default_value, inserted_columns, columns, lambda_argument_names, substituted_aliases);
         }
         else
             default_value = make_intrusive<ASTLiteral>(column.type->getDefault());
 
-        /// Keep the alias, the expression can refer to it.
         auto substituted = makeASTFunction("_CAST", std::move(default_value), make_intrusive<ASTLiteral>(column.type->getName()));
-        substituted->setAlias(identifier->tryGetAlias());
+        substituted->setAlias(alias);
         ast = std::move(substituted);
         return;
     }
@@ -2650,12 +2662,13 @@ void substituteNotInsertedColumns(
             }
         }
 
-        substituteNotInsertedColumns(function->arguments->children[1], inserted_columns, columns, lambda_argument_names, body_lambda_arguments);
+        substituteNotInsertedColumns(
+            function->arguments->children[1], inserted_columns, columns, lambda_argument_names, substituted_aliases, body_lambda_arguments);
         return;
     }
 
     for (auto & child : ast->children)
-        substituteNotInsertedColumns(child, inserted_columns, columns, lambda_argument_names, lambda_arguments);
+        substituteNotInsertedColumns(child, inserted_columns, columns, lambda_argument_names, substituted_aliases, lambda_arguments);
 }
 }
 
@@ -2848,7 +2861,9 @@ void ClientBase::sendData(Block & sample, const ColumnsDescription & columns_des
                 if (col.default_desc.expression)
                 {
                     col.default_desc.expression = col.default_desc.expression->clone();
-                    substituteNotInsertedColumns(col.default_desc.expression, inserted_columns, columns_description_for_query, lambda_argument_names);
+                    std::unordered_map<String, String> substituted_aliases;
+                    substituteNotInsertedColumns(
+                        col.default_desc.expression, inserted_columns, columns_description_for_query, lambda_argument_names, substituted_aliases);
                 }
                 reordered_description.add(std::move(col));
             }

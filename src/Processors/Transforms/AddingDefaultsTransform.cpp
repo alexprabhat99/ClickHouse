@@ -19,6 +19,7 @@
 #include <Core/BlockMissingValues.h>
 
 #include <DataTypes/DataTypesNumber.h>
+#include <DataTypes/NestedUtils.h>
 #include <DataTypes/DataTypesDecimal.h>
 #include <DataTypes/DataTypeDate.h>
 #include <DataTypes/DataTypeDate32.h>
@@ -204,8 +205,8 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
             columns_needing_defaults.emplace_back(col_name, column_idx);
     }
 
-    /// The columns which are read only for the defaults of the needed columns: their own defaults are computed only
-    /// if a default which is computed depends on them. Otherwise they could fail on the values which are not used.
+    /// The columns which are read only for the defaults of the needed columns: their own defaults are computed only if a computed
+    /// default depends on them, not through a column without missing values. Otherwise they could fail on the values which are not used.
     if (needed_columns && !columns_needing_defaults.empty())
     {
         NameSet missing_columns;
@@ -229,6 +230,8 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
 
             if (missing_columns.contains(name))
                 columns_to_compute.insert(name);
+            else if (res.has(name))
+                continue;
 
             auto it = column_defaults.find(name);
             if (it == column_defaults.end())
@@ -243,8 +246,9 @@ void AddingDefaultsTransform::transform(Chunk & chunk)
                 /// A subcolumn, e.g. `a.x` of a tuple, depends on its column.
                 String name_in_storage = required_name;
                 if (!columns.has(required_name))
-                    if (auto subcolumn = columns.tryGetColumnOrSubcolumn(GetColumnsOptions::All, required_name))
-                        name_in_storage = subcolumn->getNameInStorage();
+                    for (auto [column_name, subcolumn_name] : Nested::getAllColumnAndSubcolumnPairs(required_name))
+                        if (columns.has(String(column_name)) && columns.get(String(column_name)).type->hasSubcolumn(subcolumn_name))
+                            name_in_storage = column_name;
                 names_to_visit.push_back(std::move(name_in_storage));
             }
         }
